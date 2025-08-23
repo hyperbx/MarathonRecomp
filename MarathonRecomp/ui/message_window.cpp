@@ -265,7 +265,7 @@ static void ResetSelection()
 {
     /* Always use -1 for mouse input to prevent the selection
        cursor from erroneously appearing where it shouldn't. */
-    g_selectedRowIndex = hid::g_inputDevice == hid::EInputDevice::Mouse
+    g_selectedRowIndex = hid::GetControllerCategory() == hid::EControllerCategory::Mouse
         ? -1
         : g_defaultButtonIndex;
 
@@ -320,8 +320,8 @@ void MessageWindow::Draw()
         textY += Scale(lines.size() % 2 == 0 ? 1.5f : 8.0f);
     }
     
-    bool isController = hid::IsInputDeviceController();
-    bool isKeyboard = hid::g_inputDevice == hid::EInputDevice::Keyboard;
+    bool isGamepad = hid::IsGamepad();
+    bool isKeyboard = hid::GetControllerCategory() == hid::EControllerCategory::Keyboard;
 
     // Handle controller input when the game is booted.
     if (App::s_isInit)
@@ -398,7 +398,7 @@ void MessageWindow::Draw()
                 for (auto& button : g_buttons)
                     DrawButton(rowCount++, windowMarginY, itemWidth, itemHeight, button);
 
-                if (isController || isKeyboard)
+                if (isGamepad || isKeyboard)
                 {
                     bool upIsHeld = g_joypadAxis.y > 0.5f;
                     bool downIsHeld = g_joypadAxis.y < -0.5f;
@@ -435,7 +435,7 @@ void MessageWindow::Draw()
                     auto selectIcon = EButtonIcon::A;
                     auto backIcon = EButtonIcon::B;
 
-                    if (isController || isKeyboard)
+                    if (isGamepad || isKeyboard)
                     {
                         if (isKeyboard && !App::s_isInit)
                         {
@@ -517,7 +517,7 @@ void MessageWindow::Draw()
             }
             else
             {
-                DrawNextButtonGuide(isController, isKeyboard);
+                DrawNextButtonGuide(isGamepad, isKeyboard);
 
                 if (!g_isControlsVisible && g_isAccepted)
                 {
@@ -531,7 +531,7 @@ void MessageWindow::Draw()
         }
         else
         {
-            DrawNextButtonGuide(isController, isKeyboard);
+            DrawNextButtonGuide(isGamepad, isKeyboard);
 
             if (g_isAccepted)
             {

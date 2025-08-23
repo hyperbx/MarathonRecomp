@@ -154,11 +154,7 @@ GuestTexture* GetThumbnail(const IConfigDef* cfg)
     if (findResult == g_configThumbnails.end())
     {
         auto texture = g_defaultThumbnail.get();
-
-        bool isPlayStation = Config::ControllerIcons == EControllerIcons::PlayStation;
-
-        if (Config::ControllerIcons == EControllerIcons::Auto)
-            isPlayStation = hid::g_inputDeviceController == hid::EInputDevice::PlayStation;
+        auto isPlayStation = hid::IsPlayStation();
 
         if (cfg == &Config::ControlTutorial)
         {

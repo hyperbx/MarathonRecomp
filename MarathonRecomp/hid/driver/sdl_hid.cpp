@@ -1,65 +1,70 @@
-#include <stdafx.h>
-#include <SDL.h>
-#include <user/config.h>
 #include <hid/hid.h>
+#include <kernel/xdm.h>
 #include <os/logger.h>
 #include <ui/game_window.h>
-#include <kernel/xdm.h>
+#include <user/config.h>
 #include <app.h>
+#include <SDL.h>
 
-#define TRANSLATE_INPUT(S, X) SDL_GameControllerGetButton(controller, S) << FirstBitLow(X)
+#define TRANSLATE_INPUT(S, X) SDL_GameControllerGetButton(pController, S) << FirstBitLow(X)
 #define VIBRATION_TIMEOUT_MS 5000
 
 class Controller
 {
 public:
-    SDL_GameController* controller{};
-    SDL_Joystick* joystick{};
-    SDL_JoystickID id{ -1 };
-    XAMINPUT_GAMEPAD state{};
-    XAMINPUT_VIBRATION vibration{ 0, 0 };
-    int index{};
+    SDL_GameController* pController{};
+    SDL_Joystick* pJoystick{};
+    SDL_JoystickID ID{ -1 };
+    SDL_GameControllerType CurrentType{ SDL_CONTROLLER_TYPE_UNKNOWN };
+    XAMINPUT_GAMEPAD State{};
+    XAMINPUT_VIBRATION Vibration{ 0, 0 };
+    hid::InputProhibitor ProhibitedInputs{};
+    int Index{ -1 };
 
     Controller() = default;
 
-    explicit Controller(int index) : Controller(SDL_GameControllerOpen(index))
-    {
-        this->index = index;
-    }
+    explicit Controller(int index) : Controller(SDL_GameControllerOpen(index), index) {}
 
-    Controller(SDL_GameController* controller) : controller(controller)
+    Controller(SDL_GameController* controller, int index = 0) : pController(controller)
     {
         if (!controller)
             return;
 
-        joystick = SDL_GameControllerGetJoystick(controller);
-        id = SDL_JoystickInstanceID(joystick);
+        Index = index;
+
+        pJoystick = SDL_GameControllerGetJoystick(controller);
+        ID = SDL_JoystickInstanceID(pJoystick);
+        CurrentType = GetControllerType();
+
+        LOGFN("Detected controller (P{}): {}", Index + 1, GetControllerName());
     }
 
     SDL_GameControllerType GetControllerType() const
     {
-        return SDL_GameControllerGetType(controller);
+        return SDL_GameControllerGetType(pController);
     }
 
-    hid::EInputDevice GetInputDevice() const
+    hid::EControllerCategory GetControllerCategory() const
     {
         switch (GetControllerType())
         {
             case SDL_CONTROLLER_TYPE_PS3:
             case SDL_CONTROLLER_TYPE_PS4:
             case SDL_CONTROLLER_TYPE_PS5:
-                return hid::EInputDevice::PlayStation;
+                return hid::EControllerCategory::PlayStation;
+
             case SDL_CONTROLLER_TYPE_XBOX360:
             case SDL_CONTROLLER_TYPE_XBOXONE:
-                return hid::EInputDevice::Xbox;
+                return hid::EControllerCategory::Xbox;
+
             default:
-                return hid::EInputDevice::Unknown;
+                return hid::EControllerCategory::Unknown;
         }
     }
 
     const char* GetControllerName() const
     {
-        auto result = SDL_GameControllerName(controller);
+        auto result = SDL_GameControllerName(pController);
 
         if (!result)
             return "Unknown Device";
@@ -69,19 +74,21 @@ public:
 
     void Close()
     {
-        if (!controller)
+        if (!pController)
             return;
 
-        SDL_GameControllerClose(controller);
+        SDL_GameControllerClose(pController);
 
-        controller = nullptr;
-        joystick = nullptr;
-        id = -1;
+        pController = nullptr;
+        pJoystick = nullptr;
+        ID = -1;
+        CurrentType = SDL_CONTROLLER_TYPE_UNKNOWN;
+        Index = -1;
     }
 
     bool CanPoll()
     {
-        return controller;
+        return pController;
     }
 
     void PollAxis()
@@ -89,16 +96,16 @@ public:
         if (!CanPoll())
             return;
 
-        auto& pad = state;
+        auto& pad = State;
 
-        pad.sThumbLX = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
-        pad.sThumbLY = ~SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+        pad.sThumbLX = SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_LEFTX);
+        pad.sThumbLY = ~SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_LEFTY);
 
-        pad.sThumbRX = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX);
-        pad.sThumbRY = ~SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
+        pad.sThumbRX = SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_RIGHTX);
+        pad.sThumbRY = ~SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_RIGHTY);
 
-        pad.bLeftTrigger = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) >> 7;
-        pad.bRightTrigger = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >> 7;
+        pad.bLeftTrigger = SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_TRIGGERLEFT) >> 7;
+        pad.bRightTrigger = SDL_GameControllerGetAxis(pController, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >> 7;
     }
 
     void Poll()
@@ -106,7 +113,7 @@ public:
         if (!CanPoll())
             return;
 
-        auto& pad = state;
+        auto& pad = State;
 
         pad.wButtons = 0;
 
@@ -136,23 +143,28 @@ public:
         if (!CanPoll())
             return;
 
-        this->vibration = vibration;
+        Vibration = vibration;
 
-        SDL_GameControllerRumble(controller, vibration.wLeftMotorSpeed * 256, vibration.wRightMotorSpeed * 256, VIBRATION_TIMEOUT_MS);
+        SDL_GameControllerRumble(pController, vibration.wLeftMotorSpeed, vibration.wRightMotorSpeed, VIBRATION_TIMEOUT_MS);
+    }
+
+    void SetProhibitedInputs(uint16_t wButtons, bool leftStick, bool rightStick)
+    {
+        ProhibitedInputs = hid::InputProhibitor{ wButtons, leftStick, rightStick };
     }
 
     void SetLED(const uint8_t r, const uint8_t g, const uint8_t b) const
     {
-        SDL_GameControllerSetLED(controller, r, g, b);
+        SDL_GameControllerSetLED(pController, r, g, b);
     }
 };
 
 std::array<Controller, 4> g_controllers;
-Controller* g_activeController;
+hid::EControllerCategory g_controllerCategory;
 
 inline Controller* EnsureController(uint32_t dwUserIndex)
 {
-    if (!g_controllers[dwUserIndex].controller)
+    if (!g_controllers[dwUserIndex].pController)
         return nullptr;
 
     return &g_controllers[dwUserIndex];
@@ -162,74 +174,38 @@ inline size_t FindFreeController()
 {
     for (size_t i = 0; i < g_controllers.size(); i++)
     {
-        if (!g_controllers[i].controller)
+        if (!g_controllers[i].pController)
             return i;
     }
 
     return -1;
 }
 
-inline Controller* FindController(int which)
+inline Controller* FindController(uint32_t dwUserIndex)
 {
     for (auto& controller : g_controllers)
     {
-        if (controller.id == which)
+        if (controller.ID == dwUserIndex)
             return &controller;
     }
 
     return nullptr;
 }
 
-static void SetControllerInputDevice(Controller* controller)
-{
-    g_activeController = controller;
-
-    if (App::s_isLoading)
-        return;
-
-    hid::g_inputDevice = controller->GetInputDevice();
-    hid::g_inputDeviceController = hid::g_inputDevice;
-
-    auto controllerType = (hid::EInputDeviceExplicit)controller->GetControllerType();
-    auto controllerName = controller->GetControllerName();
-
-    // Only proceed if the controller type changes.
-    if (hid::g_inputDeviceExplicit != controllerType)
-    {
-        hid::g_inputDeviceExplicit = controllerType;
-
-        if (controllerType == hid::EInputDeviceExplicit::Unknown)
-        {
-            LOGFN("Detected controller: {} (Unknown Controller Type)", controllerName);
-        }
-        else
-        {
-            LOGFN("Detected controller: {}", controllerName);
-        }
-    }
-}
-
-static void SetControllerTimeOfDayLED(Controller& controller, EPlayerCharacter player)
+inline void SetControllerLED(Controller& controller, EPlayerCharacter player)
 {
     uint8_t r, g, b;
 
-    // TODO: Per-character colors
-
-    switch (player) {
+    // TODO
+    switch (player)
+    {
         case EPlayerCharacter::Sonic:
-            break;
         case EPlayerCharacter::Shadow:
-            break;
         case EPlayerCharacter::Silver:
-            break;
         case EPlayerCharacter::Blaze:
-            break;
         case EPlayerCharacter::Amy:
-            break;
         case EPlayerCharacter::Tails:
-            break;
         case EPlayerCharacter::Rouge:
-            break;
         case EPlayerCharacter::Knuckles:
             break;
     }
@@ -255,7 +231,7 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
 
                 g_controllers[freeIndex] = controller;
 
-                SetControllerTimeOfDayLED(controller, App::s_playerCharacter);
+                SetControllerLED(controller, App::s_playerCharacter);
             }
 
             break;
@@ -286,7 +262,8 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
                 if (abs(event->caxis.value) > 8000)
                 {
                     SDL_ShowCursor(SDL_DISABLE);
-                    SetControllerInputDevice(controller);
+
+                    g_controllerCategory = controller->GetControllerCategory();
                 }
 
                 controller->PollAxis();
@@ -294,7 +271,8 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
             else
             {
                 SDL_ShowCursor(SDL_DISABLE);
-                SetControllerInputDevice(controller);
+
+                g_controllerCategory = controller->GetControllerCategory();
 
                 controller->Poll();
             }
@@ -304,7 +282,7 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
 
         case SDL_KEYDOWN:
         case SDL_KEYUP:
-            hid::g_inputDevice = hid::EInputDevice::Keyboard;
+            g_controllerCategory = hid::EControllerCategory::Keyboard;
             break;
 
         case SDL_MOUSEMOTION:
@@ -314,7 +292,7 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
             if (!GameWindow::IsFullscreen() || GameWindow::s_isFullscreenCursorVisible)
                 SDL_ShowCursor(SDL_ENABLE);
 
-            hid::g_inputDevice = hid::EInputDevice::Mouse;
+            g_controllerCategory = hid::EControllerCategory::Mouse;
 
             break;
         }
@@ -334,7 +312,7 @@ int HID_OnSDLEvent(void*, SDL_Event* event)
         case SDL_USER_PLAYER_CHAR:
         {
             for (auto& controller : g_controllers)
-                SetControllerTimeOfDayLED(controller, static_cast<EPlayerCharacter>(event->user.code));
+                SetControllerLED(controller, static_cast<EPlayerCharacter>(event->user.code));
 
             break;
         }
@@ -358,17 +336,16 @@ void hid::Init()
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "1");
     SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "1");
     
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0"); // Uses Button Labels. This hint is disabled for Nintendo Controllers.
+    // This hint is disabled for Nintendo controllers.
+    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
 
     SDL_InitSubSystem(SDL_INIT_EVENTS);
     SDL_AddEventWatch(HID_OnSDLEvent, nullptr);
-
     SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
 
-    // Load controller mappings from SDL_GameControllerDB
-    if (int mappings = SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt"); mappings > 0) {
-        LOGFN("Loaded {} controller mapping(s) from SDL_GameControllerDB ({})", mappings, "gamecontrollerdb.txt");
-    }
+    // Load controller mappings from database.
+    if (int mappings = SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt"); mappings > 0)
+        LOGFN("Loaded {} controller mappings: {}", mappings, "gamecontrollerdb.txt");
 }
 
 uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
@@ -382,10 +359,14 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
 
     pState->dwPacketNumber = packet++;
 
-    if (!g_activeController)
+    if (auto pController = EnsureController(dwUserIndex))
+    {
+        pState->Gamepad = pController->State;
+    }
+    else
+    {
         return ERROR_DEVICE_NOT_CONNECTED;
-
-    pState->Gamepad = g_activeController->state;
+    }
 
     return ERROR_SUCCESS;
 }
@@ -395,29 +376,72 @@ uint32_t hid::SetState(uint32_t dwUserIndex, XAMINPUT_VIBRATION* pVibration)
     if (!pVibration)
         return ERROR_BAD_ARGUMENTS;
 
-    if (!g_activeController)
+    if (auto pController = EnsureController(dwUserIndex))
+    {
+        pController->SetVibration(*pVibration);
+    }
+    else
+    {
         return ERROR_DEVICE_NOT_CONNECTED;
-
-    g_activeController->SetVibration(*pVibration);
+    }
 
     return ERROR_SUCCESS;
 }
 
-uint32_t hid::GetCapabilities(uint32_t dwUserIndex, XAMINPUT_CAPABILITIES* pCaps)
+uint32_t hid::GetCapabilities(uint32_t dwUserIndex, XAMINPUT_CAPABILITIES* pCapabilities)
 {
-    if (!pCaps)
+    if (!pCapabilities)
         return ERROR_BAD_ARGUMENTS;
 
-    if (!g_activeController)
+    if (auto pController = EnsureController(dwUserIndex))
+    {
+        memset(pCapabilities, 0, sizeof(*pCapabilities));
+
+        pCapabilities->Type = XAMINPUT_DEVTYPE_GAMEPAD;
+        pCapabilities->SubType = XAMINPUT_DEVSUBTYPE_GAMEPAD;
+        pCapabilities->Flags = 0;
+        pCapabilities->Gamepad = pController->State;
+        pCapabilities->Vibration = pController->Vibration;
+    }
+    else
+    {
         return ERROR_DEVICE_NOT_CONNECTED;
-
-    memset(pCaps, 0, sizeof(*pCaps));
-
-    pCaps->Type = XAMINPUT_DEVTYPE_GAMEPAD;
-    pCaps->SubType = XAMINPUT_DEVSUBTYPE_GAMEPAD; // TODO: other types?
-    pCaps->Flags = 0;
-    pCaps->Gamepad = g_activeController->state;
-    pCaps->Vibration = g_activeController->vibration;
+    }
 
     return ERROR_SUCCESS;
+}
+
+hid::EControllerCategory hid::GetControllerCategory()
+{
+    return g_controllerCategory;
+}
+
+hid::EControllerCategory hid::GetControllerCategory(uint32_t dwUserIndex)
+{
+    auto pController = EnsureController(dwUserIndex);
+
+    if (!pController)
+        return g_controllerCategory;
+
+    return pController->GetControllerCategory();
+}
+
+void hid::SetProhibitedInputs(uint32_t dwUserIndex, uint16_t wButtons, bool leftStick, bool rightStick)
+{
+    auto pController = EnsureController(dwUserIndex);
+
+    if (!pController)
+        return;
+
+    pController->SetProhibitedInputs(wButtons, leftStick, rightStick);
+}
+
+hid::InputProhibitor hid::GetProhibitedInputs(uint32_t dwUserIndex)
+{
+    auto pController = EnsureController(dwUserIndex);
+
+    if (!pController)
+        return {};
+
+    return pController->ProhibitedInputs;
 }

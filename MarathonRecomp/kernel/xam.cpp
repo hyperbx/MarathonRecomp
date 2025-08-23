@@ -403,9 +403,6 @@ uint32_t XamContentGetDeviceData(uint32_t DeviceID, XDEVICE_DATA* pDeviceData)
 
 uint32_t XamInputGetCapabilities(uint32_t unk, uint32_t userIndex, uint32_t flags, XAMINPUT_CAPABILITIES* caps)
 {
-    if (userIndex != 0)
-        return ERROR_NO_SUCH_USER;
-
     uint32_t result = hid::GetCapabilities(userIndex, caps);
 
     if (result == ERROR_SUCCESS)
@@ -425,9 +422,6 @@ uint32_t XamInputGetCapabilities(uint32_t unk, uint32_t userIndex, uint32_t flag
 
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
-    if (userIndex != 0)
-        return ERROR_NO_SUCH_USER;
-
     memset(state, 0, sizeof(*state));
 
     if (hid::IsInputAllowed())
@@ -435,7 +429,7 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
 
     auto keyboardState = SDL_GetKeyboardState(NULL);
 
-    if (GameWindow::s_isFocused && !keyboardState[SDL_SCANCODE_LALT])
+    if (userIndex == 0 && GameWindow::s_isFocused && !keyboardState[SDL_SCANCODE_LALT])
     {
         if (keyboardState[Config::Key_LeftStickUp])
             state->Gamepad.sThumbLY = 32767;
@@ -489,15 +483,17 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
             state->Gamepad.wButtons |= XAMINPUT_GAMEPAD_Y;
     }
 
-    state->Gamepad.wButtons &= ~hid::g_prohibitedButtons;
+    auto prohibitedInputs = hid::GetProhibitedInputs(userIndex);
 
-    if (hid::g_isLeftStickProhibited)
+    state->Gamepad.wButtons &= ~prohibitedInputs.Buttons;
+
+    if (prohibitedInputs.LeftStick)
     {
         state->Gamepad.sThumbLX = 0;
         state->Gamepad.sThumbLY = 0;
     }
 
-    if (hid::g_isRightStickProhibited)
+    if (prohibitedInputs.RightStick)
     {
         state->Gamepad.sThumbRX = 0;
         state->Gamepad.sThumbRY = 0;
@@ -514,10 +510,7 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
 
 uint32_t XamInputSetState(uint32_t userIndex, uint32_t flags, XAMINPUT_VIBRATION* vibration)
 {
-    if (userIndex != 0)
-        return ERROR_NO_SUCH_USER;
-
-    if (!hid::IsInputDeviceController() || !Config::Vibration)
+    if (!hid::IsGamepad() || !Config::Vibration)
         return ERROR_SUCCESS;
 
     ByteSwapInplace(vibration->wLeftMotorSpeed);

@@ -664,12 +664,13 @@ static void DrawDescriptionContainer()
 
     EButtonIcon backIcon;
     EButtonIcon selectIcon;
-    if (hid::IsInputDeviceController())
+
+    if (hid::IsGamepad())
     {
         backIcon = EButtonIcon::B;
         selectIcon = EButtonIcon::A;
     }
-    else if (hid::g_inputDevice == hid::EInputDevice::Keyboard)
+    else if (hid::GetControllerCategory() == hid::EControllerCategory::Keyboard)
     {
         backIcon = EButtonIcon::Escape;
         selectIcon = EButtonIcon::Enter;
